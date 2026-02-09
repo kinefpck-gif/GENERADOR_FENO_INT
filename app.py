@@ -6,7 +6,7 @@ import re
 import io
 import os
 
-# --- FUNCIÓN DE EXTRACCIÓN MEJORADA ---
+# --- FUNCIÓN DE EXTRACCIÓN ROBUSTA ---
 def procesar_pdf_sunvou(pdf_file):
     pdf_bytes = pdf_file.read()
     doc_pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -16,14 +16,14 @@ def procesar_pdf_sunvou(pdf_file):
     for pagina in doc_pdf:
         texto_completo += pagina.get_text()
         
-        # Extraer el área de la curva (Sunvou suele tenerlas al final de la página)
-        # Ajustamos el área de captura (x0, y0, x1, y1)
-        pix = pagina.get_pixmap(clip=fitz.Rect(0, 380, 600, 850))
+        # Captura el área donde Sunvou pone las curvas (coordenadas ajustadas)
+        pix = pagina.get_pixmap(clip=fitz.Rect(0, 350, 600, 850))
         imagenes_curvas.append(pix.tobytes("png"))
 
-    # Búsqueda de valores (Flexible para FeNO o FeN0)
-    f50_match = re.search(r"FeN[O0]50:\s*(\d+)", texto_completo, re.IGNORECASE)
-    f200_match = re.search(r"FeN[O0]200:\s*(\d+)", texto_completo, re.IGNORECASE)
+    # Búsqueda de valores: Soporta "FeNO50", "FeN050", "FeNO 50", etc.
+    # El equipo Sunvou suele usar el número '0' en lugar de 'O'
+    f50_match = re.search(r"FeN[O0]50[:\s]*(\d+)", texto_completo, re.IGNORECASE)
+    f200_match = re.search(r"FeN[O0]200[:\s]*(\d+)", texto_completo, re.IGNORECASE)
     
     return {
         "f50": f50_match.group(1) if f50_match else "---",
@@ -37,15 +37,17 @@ def generar_word(datos_m, datos_e, plantilla_path):
         return None
 
     doc = Document(plantilla_path)
+    
+    # Unimos datos manuales y extraídos para el reemplazo
     reemplazos = {**datos_m, **datos_e}
     
-    # Reemplazar en párrafos
+    # 1. Reemplazo en Párrafos
     for p in doc.paragraphs:
         for k, v in reemplazos.items():
             if k in p.text:
                 p.text = p.text.replace(k, str(v))
                 
-    # Reemplazar en tablas
+    # 2. Reemplazo en Tablas (donde suelen estar los datos del paciente)
     for tabla in doc.tables:
         for fila in tabla.rows:
             for celda in fila.cells:
@@ -54,12 +56,13 @@ def generar_word(datos_m, datos_e, plantilla_path):
                         if k in p.text:
                             p.text = p.text.replace(k, str(v))
 
-    # Insertar la imagen donde diga CURVA_GRAFICA
+    # 3. Inserción de Imágenes (Busca el marcador CURVA_GRAFICA)
     for p in doc.paragraphs:
         if "CURVA_GRAFICA" in p.text:
-            p.text = p.text.replace("CURVA_GRAFICA", "")
+            p.text = p.text.replace("CURVA_GRAFICA", "") # Limpia el texto
             run = p.add_run()
             if datos_e['curvas']:
+                # Insertamos la primera curva detectada
                 img_stream = io.BytesIO(datos_e['curvas'][0])
                 run.add_picture(img_stream, width=Inches(5.0))
 
@@ -68,60 +71,70 @@ def generar_word(datos_m, datos_e, plantilla_path):
     target.seek(0)
     return target
 
-# --- INTERFAZ STREAMLIT ---
-st.set_page_config(page_title="INT - Laboratorio Función Pulmonar", layout="wide")
+# --- INTERFAZ DE USUARIO (STREAMLIT) ---
+st.set_page_config(page_title="INT - Laboratorio FeNO", layout="wide")
 
-st.title("🏥 Extractor FeNO Sunvou a Informe INT")
+st.title("🫁 Generador de Informes FeNO - INT")
+st.info("Ingresa los datos del paciente a mano y sube el PDF del equipo para extraer resultados y curvas.")
 
-col1, col2 = st.columns([1, 1])
+col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("1. Datos del Paciente (Manual)")
+    st.subheader("📝 Datos del Paciente")
     nombre = st.text_input("Nombre")
     apellidos = st.text_input("Apellidos")
-    rut = st.text_input("RUT")
+    rut = st.text_input("RUT (ej: 12.345.678-9)")
     edad = st.text_input("Edad")
-    genero = st.selectbox("Género", ["Hombre", "Mujer"])
-    fecha_examen = st.date_input("Fecha del Examen")
+    genero = st.selectbox("Género", ["Hombre", "Mujer", "Otro"])
+    fecha_hoy = st.date_input("Fecha del Examen")
 
 with col2:
-    st.subheader("2. Cargar PDF del Equipo")
-    pdf_file = st.file_uploader("Arrastra aquí el PDF original de Sunvou", type="pdf")
-    tipo_inf = st.radio("Plantilla de salida:", ["FeNO 50", "FeNO 50-200"])
+    st.subheader("📂 Datos del Equipo (Sunvou)")
+    pdf_file = st.file_uploader("Subir PDF generado por el equipo", type="pdf")
+    tipo_inf = st.radio("Plantilla a utilizar:", ["FeNO 50", "FeNO 50-200"])
 
-if st.button("🚀 Generar Informe Final"):
+# --- PROCESAMIENTO ---
+if st.button("🚀 Procesar y Descargar Informe"):
     if pdf_file and nombre and rut:
-        with st.spinner("Procesando..."):
-            # Extraer del PDF
+        with st.spinner("Leyendo PDF y generando documento..."):
+            # 1. Extraer datos del PDF
             res_pdf = procesar_pdf_sunvou(pdf_file)
             
-            # Preparar datos
-            datos_m = {
-                "{{NOMBRE}}": nombre, "{{APELLIDOS}}": apellidos,
-                "{{RUT}}": rut, "{{EDAD}}": edad, "{{GENERO}}": genero,
-                "{{FECHA_EXAMEN}}": str(fecha_examen)
+            # 2. Preparar diccionario de etiquetas para el Word
+            datos_manuales = {
+                "{{NOMBRE}}": nombre,
+                "{{APELLIDOS}}": apellidos,
+                "{{RUT}}": rut,
+                "{{EDAD}}": edad,
+                "{{GENERO}}": genero,
+                "{{FECHA_EXAMEN}}": fecha_hoy.strftime("%d/%m/%Y")
             }
-            datos_e = {
+            
+            datos_extraidos = {
                 "{{FENO50}}": res_pdf['f50'],
                 "{{FENO200}}": res_pdf['f200'],
                 "curvas": res_pdf['curvas']
             }
             
-            # Ruta de plantilla
+            # Mostrar preview de lo encontrado para seguridad del usuario
+            st.write(f"✅ **Datos detectados:** FeNO50: {res_pdf['f50']} ppb | FeNO200: {res_pdf['f200']} ppb")
+            
+            # 3. Definir ruta de plantilla y generar
             base_dir = os.path.dirname(os.path.abspath(__file__))
-            plantilla_path = os.path.join(base_dir, "plantillas", f"{tipo_inf} Informe.docx")
+            nombre_plantilla = f"{tipo_inf} Informe.docx"
+            plantilla_path = os.path.join(base_dir, "plantillas", nombre_plantilla)
             
-            archivo_word = generar_word(datos_m, datos_e, plantilla_path)
+            archivo_final = generar_word(datos_manuales, datos_extraidos, plantilla_path)
             
-            if archivo_word:
-                st.success("¡Informe procesado!")
+            if archivo_final:
+                st.success("¡Informe generado con éxito!")
                 st.download_button(
-                    label="⬇️ Descargar Informe .docx",
-                    data=archivo_word,
-                    file_name=f"FeNO_{rut}.docx",
+                    label="⬇️ Descargar Informe Word",
+                    data=archivo_final,
+                    file_name=f"Informe_FeNO_{rut}.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
             else:
-                st.error(f"Error: No se encontró la plantilla en {plantilla_path}")
+                st.error(f"Error: No se encontró el archivo '{nombre_plantilla}' en la carpeta 'plantillas'.")
     else:
-        st.warning("Asegúrate de rellenar el nombre, RUT y subir el PDF.")
+        st.warning("Por favor completa el Nombre, RUT y sube un archivo PDF.")
