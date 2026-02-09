@@ -7,12 +7,12 @@ import io
 import os
 
 # ==========================================================
-# 1. EXTRACCIÓN DE CURVA DE EXHALACIÓN (RECORTE AJUSTADO)
+# 1. EXTRACCIÓN EXCLUSIVA DE LA CURVA DE EXHALACIÓN (GRÁFICO)
 # ==========================================================
 def extraer_curva_exhalacion(pagina):
     """
-    Extrae únicamente el gráfico rotulado como 'CURVA DE EXHALACIÓN'
-    con recorte optimizado (sin margen blanco izquierdo).
+    Extrae exclusivamente el gráfico de la curva de exhalación
+    (línea + ejes), sin título ni márgenes blancos.
     """
     bloques = pagina.get_text("blocks")
 
@@ -21,15 +21,15 @@ def extraer_curva_exhalacion(pagina):
 
         if "CURVA DE EXHALACIÓN" in texto.upper():
             rect_curva = fitz.Rect(
-                x0 + 40,   # ajuste a la derecha (elimina espacio en blanco)
-                y1 + 6,    # debajo del título
-                x1 + 290,  # ancho real del gráfico
-                y1 + 175   # alto real del gráfico
+                x0 + 20,     # elimina margen izquierdo
+                y1 + 18,     # baja desde el texto al inicio del gráfico
+                x0 + 460,    # ancho real del gráfico
+                y1 + 200     # alto real del gráfico
             )
 
             pix = pagina.get_pixmap(
                 clip=rect_curva,
-                matrix=fitz.Matrix(4, 4),
+                matrix=fitz.Matrix(4, 4),  # alta resolución clínica
                 alpha=False
             )
             return pix.tobytes("png")
@@ -172,3 +172,4 @@ if st.button("🚀 Crear informe clínico"):
             word,
             f"Informe_FeNO_{rut}.docx"
         )
+
