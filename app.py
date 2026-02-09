@@ -9,10 +9,6 @@ import os
 import tempfile
 from datetime import datetime
 from PIL import Image
-import base64
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-import pandas as pd
 
 # ==========================================================
 # 1. CONFIGURACIÓN DE LA PÁGINA STREAMLIT
@@ -261,7 +257,40 @@ def extraer_datos_pdf_sunvou(pdf_file):
         return None
 
 # ==========================================================
-# 3. PROCESAMIENTO DEL DOCUMENTO WORD (CON CURVA)
+# 3. FUNCIÓN PARA APLICAR FUENTE ARIAL A TODO EL DOCUMENTO
+# ==========================================================
+def aplicar_fuente_arial_a_todo(doc):
+    """
+    Aplica fuente Arial a todo el documento Word
+    """
+    try:
+        # Aplicar Arial a todos los estilos
+        for style in doc.styles:
+            try:
+                style.font.name = 'Arial'
+            except:
+                pass
+        
+        # Aplicar Arial a todos los párrafos
+        for paragraph in doc.paragraphs:
+            for run in paragraph.runs:
+                run.font.name = 'Arial'
+        
+        # Aplicar Arial a todas las tablas
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        for run in paragraph.runs:
+                            run.font.name = 'Arial'
+        
+        return doc
+    except Exception as e:
+        st.warning(f"⚠️ No se pudo aplicar fuente Arial: {str(e)}")
+        return doc
+
+# ==========================================================
+# 4. PROCESAMIENTO DEL DOCUMENTO WORD (CON CURVA)
 # ==========================================================
 def procesar_documento_word_con_curva(doc_path, datos):
     """
@@ -271,39 +300,45 @@ def procesar_documento_word_con_curva(doc_path, datos):
         # Cargar el documento Word
         doc = Document(doc_path)
         
-        # Reemplazar en párrafos
+        # Aplicar fuente Arial a todo el documento
+        doc = aplicar_fuente_arial_a_todo(doc)
+        
+        # PRIMERO: Reemplazar CURVA_EXHALA si hay imagen
+        if datos.get("img_curva"):
+            for paragraph in doc.paragraphs:
+                if "CURVA_EXHALA" in paragraph.text:
+                    # Limpiar el párrafo
+                    paragraph.clear()
+                    
+                    # Agregar la imagen de la curva centrada
+                    run = paragraph.add_run()
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    run.add_picture(
+                        io.BytesIO(datos["img_curva"]),
+                        width=Inches(3.7)  # Tamaño similar al original
+                    )
+                    break
+        
+        # SEGUNDO: Reemplazar en párrafos
         for paragraph in doc.paragraphs:
             texto_original = paragraph.text
             
-            # Caso especial para CURVA_EXHALA
-            if "CURVA_EXHALA" in texto_original and datos.get("img_curva"):
-                # Limpiar el párrafo
+            # Reemplazar FeNO50 con formato especial
+            if "{{FeNO50}}" in texto_original:
+                valor_feno = datos.get("{{FeNO50}}", "---")
                 paragraph.clear()
-                
-                # Agregar la imagen de la curva centrada
-                run = paragraph.add_run()
+                run = paragraph.add_run(f"{valor_feno} ppb")
+                run.font.bold = True
+                run.font.size = Pt(12)
                 paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                run.add_picture(
-                    io.BytesIO(datos["img_curva"]),
-                    width=Inches(3.7)  # Tamaño similar al original
-                )
-                continue
             
-            # Reemplazar otros placeholders
+            # Reemplazar otros placeholders normales
             for key, value in datos.items():
-                if key.startswith("{{") and key.endswith("}}"):
-                    placeholder = key
-                    if placeholder in texto_original:
-                        # Caso especial para FeNO50 - agregar "ppb" en negrita
-                        if placeholder == "{{FeNO50}}":
-                            paragraph.clear()
-                            run = paragraph.add_run(f"{value} ppb")
-                            run.font.bold = True
-                            run.font.size = Pt(14)
-                        else:
-                            paragraph.text = texto_original.replace(placeholder, str(value))
+                if key.startswith("{{") and key.endswith("}}") and key != "{{FeNO50}}":
+                    if key in texto_original:
+                        paragraph.text = texto_original.replace(key, str(value))
         
-        # Reemplazar en tablas
+        # TERCERO: Reemplazar en tablas
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
@@ -312,9 +347,8 @@ def procesar_documento_word_con_curva(doc_path, datos):
                         
                         for key, value in datos.items():
                             if key.startswith("{{") and key.endswith("}}"):
-                                placeholder = key
-                                if placeholder in texto_original:
-                                    paragraph.text = texto_original.replace(placeholder, str(value))
+                                if key in texto_original:
+                                    paragraph.text = texto_original.replace(key, str(value))
         
         # Guardar en archivo temporal
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
@@ -334,53 +368,6 @@ def procesar_documento_word_con_curva(doc_path, datos):
         return None
 
 # ==========================================================
-# 4. GENERACIÓN DE PDF (OPCIONAL)
-# ==========================================================
-def generar_pdf_simple(datos):
-    """
-    Genera un PDF simple con los datos (opcional)
-    """
-    try:
-        # Crear archivo temporal
-        temp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
-        pdf_path = temp_pdf.name
-        temp_pdf.close()
-        
-        # Crear PDF
-        c = canvas.Canvas(pdf_path, pagesize=letter)
-        
-        # Título
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(100, 750, "INFORME DE PRUEBA FENO")
-        c.setFont("Helvetica", 12)
-        
-        # Datos del paciente
-        y_pos = 700
-        c.drawString(100, y_pos, f"Paciente: {datos.get('nombre', '')} {datos.get('apellidos', '')}")
-        y_pos -= 20
-        c.drawString(100, y_pos, f"RUT: {datos.get('rut', '')}")
-        y_pos -= 20
-        c.drawString(100, y_pos, f"FeNO50: {datos.get('feno50', '')} ppb")
-        y_pos -= 20
-        c.drawString(100, y_pos, f"Fecha: {datos.get('fecha_examen', '')}")
-        
-        # Guardar PDF
-        c.save()
-        
-        # Leer bytes
-        with open(pdf_path, 'rb') as f:
-            pdf_bytes = f.read()
-        
-        # Limpiar
-        os.unlink(pdf_path)
-        
-        return pdf_bytes
-        
-    except Exception as e:
-        st.error(f"Error generando PDF: {str(e)}")
-        return None
-
-# ==========================================================
 # 5. INTERFAZ STREAMLIT MEJORADA
 # ==========================================================
 def main():
@@ -392,28 +379,26 @@ def main():
     if 'vista_previa' not in st.session_state:
         st.session_state.vista_previa = False
     
-    # Sidebar para controles
+    # Sidebar para instrucciones
     with st.sidebar:
-        st.markdown("### ⚙️ Configuración")
-        formato_descarga = st.radio(
-            "Formato de descarga:",
-            ["Word (.docx)", "PDF (.pdf)"],
-            index=0
-        )
-        
-        st.markdown("---")
         st.markdown("### 📖 Instrucciones")
         st.markdown("""
-        1. Complete datos del paciente
-        2. Suba el PDF Sunvou
-        3. Extraiga datos automáticamente
-        4. Revise la vista previa
-        5. Genere y descargue
+        1. **Complete** datos del paciente
+        2. **Suba** el PDF Sunvou
+        3. **Extraiga** datos automáticamente
+        4. **Revise** la vista previa
+        5. **Genere** el informe Word
         """)
+        
+        st.markdown("---")
+        st.markdown("### ⚙️ Configuración")
         
         # Debug mode
         if st.checkbox("Modo Debug"):
             st.session_state.debug_mode = True
+        
+        st.markdown("---")
+        st.caption("Versión 2.0 - INT Laboratorio")
     
     # Pestañas principales
     tab1, tab2, tab3, tab4 = st.tabs(["👤 Datos Paciente", "📄 Cargar PDF", "👁️ Vista Previa", "🚀 Generar"])
@@ -443,23 +428,26 @@ def main():
             fecha_examen = st.date_input("Fecha Examen *", key="fecha_examen")
             st.markdown('</div>', unsafe_allow_html=True)
         
-        # Guardar datos del paciente
-        if st.button("💾 Guardar Datos Paciente", key="guardar_paciente"):
-            st.session_state.datos_paciente = {
-                "nombre": nombre,
-                "apellidos": apellidos,
-                "rut": rut,
-                "genero": genero,
-                "procedencia": procedencia,
-                "f_nacimiento": f_nacimiento,
-                "edad": edad,
-                "altura": altura,
-                "peso": peso,
-                "medico": medico,
-                "operador": operador,
-                "fecha_examen": fecha_examen.strftime("%d/%m/%Y") if fecha_examen else ""
-            }
-            st.success("✅ Datos del paciente guardados")
+        # Botón para guardar datos
+        if st.button("💾 Guardar Datos del Paciente", type="primary", key="guardar_paciente"):
+            if not all([nombre, apellidos, rut, genero != "Seleccione", f_nacimiento, altura, peso, medico]):
+                st.warning("⚠️ Complete todos los campos obligatorios (*)")
+            else:
+                st.session_state.datos_paciente = {
+                    "nombre": nombre,
+                    "apellidos": apellidos,
+                    "rut": rut,
+                    "genero": genero,
+                    "procedencia": procedencia,
+                    "f_nacimiento": f_nacimiento,
+                    "edad": edad,
+                    "altura": altura,
+                    "peso": peso,
+                    "medico": medico,
+                    "operador": operador,
+                    "fecha_examen": fecha_examen.strftime("%d/%m/%Y") if fecha_examen else ""
+                }
+                st.success("✅ Datos del paciente guardados correctamente")
     
     with tab2:
         st.markdown("### 📄 Cargar Informe Sunvou")
@@ -513,7 +501,7 @@ def main():
         
         # Verificar que haya datos
         if not st.session_state.datos_paciente:
-            st.warning("⚠️ Primero complete los datos del paciente")
+            st.warning("⚠️ Primero complete y guarde los datos del paciente")
         elif not st.session_state.datos_pdf:
             st.warning("⚠️ Primero extraiga los datos del PDF")
         else:
@@ -563,13 +551,13 @@ def main():
             
             st.markdown('</div>', unsafe_allow_html=True)
             
-            # Botón para activar vista previa
-            if st.button("✅ Confirmar Vista Previa", type="primary"):
+            # Botón para confirmar vista previa
+            if st.button("✅ Confirmar y Habilitar Generación", type="primary", key="confirmar_vista"):
                 st.session_state.vista_previa = True
-                st.success("✅ Vista previa confirmada. Puede proceder a generar el informe.")
+                st.success("✅ Vista previa confirmada. Ahora puede generar el informe.")
     
     with tab4:
-        st.markdown("### 🚀 Generar y Descargar Informe")
+        st.markdown("### 🚀 Generar Informe Word")
         
         # Verificar condiciones
         condiciones = [
@@ -590,107 +578,106 @@ def main():
             st.markdown('<div class="success-box">', unsafe_allow_html=True)
             st.success("🎉 ¡Todo listo para generar el informe!")
             
-            # Botones de generación
-            col_gen1, col_gen2 = st.columns(2)
-            
-            with col_gen1:
-                if st.button("📄 Generar Documento Word", type="primary", use_container_width=True):
-                    with st.spinner("Generando Word..."):
-                        try:
-                            # Preparar datos completos
-                            datos_completos = {
-                                # Datos del paciente
-                                "{{NOMBRE}}": st.session_state.datos_paciente.get("nombre", ""),
-                                "{{APELLIDOS}}": st.session_state.datos_paciente.get("apellidos", ""),
-                                "{{RUT}}": st.session_state.datos_paciente.get("rut", ""),
-                                "{{GENERO}}": st.session_state.datos_paciente.get("genero", ""),
-                                "{{PROCEDENCIA}}": st.session_state.datos_paciente.get("procedencia", ""),
-                                "{{F_NACIMIENTO}}": st.session_state.datos_paciente.get("f_nacimiento", ""),
-                                "{{EDAD}}": st.session_state.datos_paciente.get("edad", ""),
-                                "{{ALTURA}}": st.session_state.datos_paciente.get("altura", ""),
-                                "{{PESO}}": st.session_state.datos_paciente.get("peso", ""),
-                                "{{MEDICO}}": st.session_state.datos_paciente.get("medico", ""),
-                                "{{OPERADOR}}": st.session_state.datos_paciente.get("operador", ""),
-                                "{{FECHA_EXAMEN}}": st.session_state.datos_paciente.get("fecha_examen", ""),
-                                
-                                # Datos técnicos
-                                "{{FeNO50}}": st.session_state.datos_pdf.get("FeNO50", "---"),
-                                "{{Temperatura}}": st.session_state.datos_pdf.get("Temperatura", "---"),
-                                "{{Presion}}": st.session_state.datos_pdf.get("Presion", "---"),
-                                "{{Tasa de flujo}}": st.session_state.datos_pdf.get("Flujo", "---"),
-                                
-                                # Imagen de la curva
-                                "img_curva": st.session_state.datos_pdf.get("img_curva")
-                            }
+            # Botón de generación
+            if st.button("📄 GENERAR DOCUMENTO WORD", type="primary", use_container_width=True):
+                with st.spinner("🔄 Generando informe Word..."):
+                    try:
+                        # Preparar datos completos
+                        datos_completos = {
+                            # Datos del paciente
+                            "{{NOMBRE}}": st.session_state.datos_paciente.get("nombre", ""),
+                            "{{APELLIDOS}}": st.session_state.datos_paciente.get("apellidos", ""),
+                            "{{RUT}}": st.session_state.datos_paciente.get("rut", ""),
+                            "{{GENERO}}": st.session_state.datos_paciente.get("genero", ""),
+                            "{{PROCEDENCIA}}": st.session_state.datos_paciente.get("procedencia", ""),
+                            "{{F_NACIMIENTO}}": st.session_state.datos_paciente.get("f_nacimiento", ""),
+                            "{{EDAD}}": st.session_state.datos_paciente.get("edad", ""),
+                            "{{ALTURA}}": st.session_state.datos_paciente.get("altura", ""),
+                            "{{PESO}}": st.session_state.datos_paciente.get("peso", ""),
+                            "{{MEDICO}}": st.session_state.datos_paciente.get("medico", ""),
+                            "{{OPERADOR}}": st.session_state.datos_paciente.get("operador", ""),
+                            "{{FECHA_EXAMEN}}": st.session_state.datos_paciente.get("fecha_examen", ""),
                             
-                            # Buscar plantilla
-                            plantilla_path = None
-                            for ruta in ["FeNO 50 Informe.docx", "plantillas/FeNO 50 Informe.docx"]:
-                                if os.path.exists(ruta):
-                                    plantilla_path = ruta
-                                    break
+                            # Datos técnicos
+                            "{{FeNO50}}": st.session_state.datos_pdf.get("FeNO50", "---"),
+                            "{{Temperatura}}": st.session_state.datos_pdf.get("Temperatura", "---"),
+                            "{{Presion}}": st.session_state.datos_pdf.get("Presion", "---"),
+                            "{{Tasa de flujo}}": st.session_state.datos_pdf.get("Flujo", "---"),
                             
-                            if not plantilla_path:
-                                st.error("❌ No se encuentra la plantilla Word")
-                                return
+                            # Imagen de la curva
+                            "img_curva": st.session_state.datos_pdf.get("img_curva")
+                        }
+                        
+                        # Buscar plantilla
+                        plantilla_path = None
+                        posibles_rutas = [
+                            "FeNO 50 Informe.docx",
+                            "plantillas/FeNO 50 Informe.docx",
+                            "FeNO50 Informe.docx",
+                            "plantillas/FeNO50 Informe.docx"
+                        ]
+                        
+                        for ruta in posibles_rutas:
+                            if os.path.exists(ruta):
+                                plantilla_path = ruta
+                                break
+                        
+                        if not plantilla_path:
+                            st.error("❌ No se encuentra la plantilla Word")
+                            st.info("""
+                            **Coloque la plantilla en una de estas ubicaciones:**
+                            1. En la carpeta actual: `FeNO 50 Informe.docx`
+                            2. En carpeta plantillas: `plantillas/FeNO 50 Informe.docx`
+                            """)
+                            return
+                        
+                        st.info(f"📄 Usando plantilla: {plantilla_path}")
+                        
+                        # Procesar documento
+                        doc_bytes = procesar_documento_word_con_curva(plantilla_path, datos_completos)
+                        
+                        if doc_bytes:
+                            # Crear nombre de archivo
+                            nombre_simple = f"{st.session_state.datos_paciente.get('nombre', '')}_{st.session_state.datos_paciente.get('apellidos', '')}"
+                            nombre_simple = nombre_simple.replace(" ", "_").replace("/", "_")
+                            nombre_archivo = f"INFORME_FENO_{nombre_simple}_{datetime.now().strftime('%Y%m%d_%H%M')}.docx"
                             
-                            # Procesar documento
-                            doc_bytes = procesar_documento_word_con_curva(plantilla_path, datos_completos)
+                            # Mostrar información
+                            st.markdown("**✅ Características del informe generado:**")
+                            st.markdown("""
+                            - ✅ **Formato profesional** del INT
+                            - ✅ **FeNO50 en negrita** con "ppb"
+                            - ✅ **Curva de exhalación** insertada en 'CURVA_EXHALA'
+                            - ✅ **Fuente Arial** en todo el documento
+                            - ✅ **Datos completos** del paciente
+                            """)
                             
-                            if doc_bytes:
-                                # Nombre del archivo
-                                nombre_archivo = f"INFORME_FENO_{st.session_state.datos_paciente.get('rut', '')}_{datetime.now().strftime('%Y%m%d_%H%M')}.docx"
-                                
-                                # Botón de descarga
-                                st.download_button(
-                                    label="⬇️ Descargar Word",
-                                    data=doc_bytes,
-                                    file_name=nombre_archivo,
-                                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                    use_container_width=True
-                                )
+                            # Botón de descarga
+                            st.download_button(
+                                label="⬇️ DESCARGAR DOCUMENTO WORD",
+                                data=doc_bytes,
+                                file_name=nombre_archivo,
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                type="primary",
+                                use_container_width=True
+                            )
                             
-                        except Exception as e:
-                            st.error(f"❌ Error generando Word: {str(e)}")
-            
-            with col_gen2:
-                if st.button("📊 Generar PDF", type="secondary", use_container_width=True):
-                    with st.spinner("Generando PDF..."):
-                        try:
-                            # Combinar datos para PDF
-                            datos_pdf_combinados = {
-                                **st.session_state.datos_paciente,
-                                "feno50": st.session_state.datos_pdf.get("FeNO50", "---")
-                            }
-                            
-                            # Generar PDF
-                            pdf_bytes = generar_pdf_simple(datos_pdf_combinados)
-                            
-                            if pdf_bytes:
-                                nombre_archivo = f"INFORME_FENO_{st.session_state.datos_paciente.get('rut', '')}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
-                                
-                                st.download_button(
-                                    label="⬇️ Descargar PDF",
-                                    data=pdf_bytes,
-                                    file_name=nombre_archivo,
-                                    mime="application/pdf",
-                                    use_container_width=True
-                                )
-                            
-                        except Exception as e:
-                            st.error(f"❌ Error generando PDF: {str(e)}")
+                            # Instrucciones finales
+                            st.markdown("""
+                            **📋 Pasos siguientes:**
+                            1. **Abra** el documento descargado en Microsoft Word
+                            2. **Verifique** que todos los datos estén correctos
+                            3. **Confirme** que la fuente es Arial en todo el documento
+                            4. **Guarde como PDF** (Archivo → Guardar como → PDF)
+                            5. **Envíe** el PDF al médico y archive
+                            """)
+                        else:
+                            st.error("❌ Error al generar el documento Word")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error generando el informe: {str(e)}")
             
             st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Información adicional
-            st.markdown("""
-            **📋 Características del informe:**
-            - ✅ **Formato profesional** del INT
-            - ✅ **FeNO50 en negrita** con "ppb"
-            - ✅ **Curva de exhalación** insertada
-            - ✅ **Fuente Arial** en todo el documento
-            - ✅ **Datos completos** del paciente
-            """)
         else:
             st.warning("ℹ️ Complete todos los pasos anteriores para generar el informe")
 
@@ -702,4 +689,4 @@ if __name__ == "__main__":
     
     # Pie de página
     st.markdown("---")
-    st.caption("© Instituto Nacional del Tórax - Laboratorio de Función Pulmonar | Sistema de Informes FeNO v2.0")
+    st.caption("© Instituto Nacional del Tórax - Laboratorio de Función Pulmonar | Sistema de Informes FeNO v2.1")
