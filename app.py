@@ -7,12 +7,12 @@ import io
 import os
 
 # ==========================================================
-# 1. EXTRACCIÓN ROBUSTA DE CURVA DE EXHALACIÓN
+# 1. EXTRACCIÓN DE CURVA DE EXHALACIÓN (RECORTE AJUSTADO)
 # ==========================================================
 def extraer_curva_exhalacion(pagina):
     """
     Extrae únicamente el gráfico rotulado como 'CURVA DE EXHALACIÓN'
-    usando texto + geometría (estándar hospitalario).
+    con recorte optimizado (sin margen blanco izquierdo).
     """
     bloques = pagina.get_text("blocks")
 
@@ -21,10 +21,10 @@ def extraer_curva_exhalacion(pagina):
 
         if "CURVA DE EXHALACIÓN" in texto.upper():
             rect_curva = fitz.Rect(
-                x0 - 15,
-                y1 + 5,
-                x1 + 270,
-                y1 + 170
+                x0 + 40,   # ajuste a la derecha (elimina espacio en blanco)
+                y1 + 6,    # debajo del título
+                x1 + 290,  # ancho real del gráfico
+                y1 + 175   # alto real del gráfico
             )
 
             pix = pagina.get_pixmap(
@@ -38,7 +38,7 @@ def extraer_curva_exhalacion(pagina):
 
 
 # ==========================================================
-# 2. PROCESAMIENTO PDF SUNVOU
+# 2. PROCESAMIENTO DEL PDF SUNVOU
 # ==========================================================
 def procesar_pdf_sunvou(pdf_file):
     pdf_bytes = pdf_file.read()
@@ -62,7 +62,7 @@ def procesar_pdf_sunvou(pdf_file):
 
 
 # ==========================================================
-# 3. GENERACIÓN WORD FINAL (PLANTILLA CLÍNICA)
+# 3. GENERACIÓN DEL WORD (FORMATO INTACTO)
 # ==========================================================
 def generar_word(datos, plantilla_path):
     doc = Document(plantilla_path)
@@ -71,7 +71,7 @@ def generar_word(datos, plantilla_path):
         texto_original = p.text
 
         for k, v in datos.items():
-            if k in p.text and isinstance(v, str):
+            if isinstance(v, str) and k in p.text:
                 p.text = p.text.replace(k, v)
 
         if "CURVA_EXHALA" in texto_original and datos["img_exhala"]:
@@ -100,7 +100,7 @@ def generar_word(datos, plantilla_path):
 # ==========================================================
 # 4. INTERFAZ STREAMLIT
 # ==========================================================
-st.set_page_config("INT – FeNO", layout="wide")
+st.set_page_config(page_title="INT – FeNO", layout="wide")
 st.title("🫁 Generador Clínico de Informes FeNO")
 
 col1, col2 = st.columns(2)
@@ -111,7 +111,8 @@ with col1:
     apellidos = st.text_input("Apellidos")
     rut = st.text_input("RUT")
     genero = st.selectbox("Género", ["Hombre", "Mujer"])
-    f_nac = st.text_input("Fecha nacimiento")
+    procedencia = st.text_input("Procedencia")
+    f_nac = st.text_input("Fecha de nacimiento")
     edad = st.text_input("Edad")
     altura = st.text_input("Altura (cm)")
     peso = st.text_input("Peso (kg)")
@@ -123,6 +124,7 @@ with col2:
     st.subheader("📄 Informe Sunvou")
     pdf = st.file_uploader("Subir PDF", type="pdf")
     tipo = st.radio("Plantilla", ["FeNO 50", "FeNO 50-200"])
+
 
 # ==========================================================
 # 5. EJECUCIÓN
@@ -143,6 +145,7 @@ if st.button("🚀 Crear informe clínico"):
             "{{APELLIDOS}}": apellidos,
             "{{RUT}}": rut,
             "{{GENERO}}": genero,
+            "{{PROCEDENCIA}}": procedencia,
             "{{F_NACIMIENTO}}": f_nac,
             "{{EDAD}}": edad,
             "{{ALTURA}}": altura,
