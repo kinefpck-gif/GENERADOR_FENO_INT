@@ -63,11 +63,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================================
-# 2. EXTRACCIÓN DE DATOS DEL PDF SUNVOU (MEJORADA)
+# 2. EXTRACCIÓN DE DATOS DEL PDF SUNVOU (MEJORADA Y SEGURA)
 # ==========================================================
 def extraer_datos_pdf_sunvou(pdf_file):
     """
     Extrae datos y gráficos del informe Sunvou con mayor precisión
+    y manejo seguro de valores nulos
     """
     try:
         pdf_bytes = pdf_file.read()
@@ -75,87 +76,217 @@ def extraer_datos_pdf_sunvou(pdf_file):
         pagina = doc_pdf[0]
         texto_completo = pagina.get_text()
         
+        # Mostrar texto extraído para debugging (opcional)
+        if st.session_state.get('debug_mode', False):
+            with st.expander("📄 Texto extraído del PDF"):
+                st.text(texto_completo[:2000])  # Primeros 2000 caracteres
+        
         # Patrones mejorados para extracción
         def buscar_valor(patron, texto=texto_completo, default="---"):
-            matches = re.findall(patron, texto, re.IGNORECASE | re.MULTILINE)
-            if matches:
-                # Tomar el último match (el más probable)
-                return str(matches[-1]).strip()
-            return default
+            try:
+                matches = re.findall(patron, texto, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+                if matches:
+                    # Tomar el último match (el más probable)
+                    valor = str(matches[-1]).strip()
+                    # Limpiar el valor
+                    valor = re.sub(r'[^\d.,]', '', valor)
+                    return valor if valor else default
+                return default
+            except:
+                return default
         
-        # Extracción de valores principales
+        # Extracción de valores principales con múltiples patrones
         datos = {
-            "FeNO50": buscar_valor(r'FeN[O0]50[:\s]*(\d+)'),
-            "Temperatura": buscar_valor(r'Temperatura[:\s]*([\d,]+)'),
-            "Presion": buscar_valor(r'Presión[:\s]*([\d,]+)'),
-            "Flujo": buscar_valor(r'(?:Tasa de Flujo|Tasa de flujo)[:\s]*([\d,]+)'),
+            "FeNO50": "---",
+            "Temperatura": "---",
+            "Presion": "---", 
+            "Flujo": "---",
             "img_curva": None,
             "img_logo": None
         }
         
-        # Limpiar y formatear valores
-        for key in datos:
-            if datos[key] != "---":
-                datos[key] = datos[key].replace(',', '.')
+        # Múltiples patrones para cada valor (para cubrir diferentes formatos)
+        patrones_feno = [
+            r'FeN[O0]50[:\s]*(\d+[\.,]?\d*)',
+            r'FeNO50[:\s]*(\d+[\.,]?\d*)',
+            r'FeN050[:\s]*(\d+[\.,]?\d*)',
+            r'FeNO\s*50[:\s]*(\d+[\.,]?\d*)',
+            r'FeNO50\s*(\d+[\.,]?\d*)'
+        ]
+        
+        patrones_temp = [
+            r'Temperatura[:\s]*(\d+[\.,]?\d*)',
+            r'Temp\.?[:\s]*(\d+[\.,]?\d*)',
+            r'T[:\s]*(\d+[\.,]?\d*)\s*°C'
+        ]
+        
+        patrones_pres = [
+            r'Presión[:\s]*(\d+[\.,]?\d*)',
+            r'Pres\.?[:\s]*(\d+[\.,]?\d*)',
+            r'Pres[:\s]*(\d+[\.,]?\d*)\s*cm'
+        ]
+        
+        patrones_flujo = [
+            r'Tasa de Flujo[:\s]*(\d+[\.,]?\d*)',
+            r'Tasa de flujo[:\s]*(\d+[\.,]?\d*)',
+            r'Flujo[:\s]*(\d+[\.,]?\d*)',
+            r'Flow[:\s]*(\d+[\.,]?\d*)'
+        ]
+        
+        # Función para buscar con múltiples patrones
+        def buscar_con_patrones(patrones):
+            for patron in patrones:
+                valor = buscar_valor(patron)
+                if valor != "---":
+                    return valor
+            return "---"
+        
+        # Buscar cada valor
+        datos["FeNO50"] = buscar_con_patrones(patrones_feno)
+        datos["Temperatura"] = buscar_con_patrones(patrones_temp)
+        datos["Presion"] = buscar_con_patrones(patrones_pres)
+        datos["Flujo"] = buscar_con_patrones(patrones_flujo)
+        
+        # Limpiar y formatear valores de forma segura
+        def limpiar_valor(valor):
+            if valor == "---" or valor is None:
+                return "---"
+            try:
+                # Reemplazar coma por punto para decimales
+                valor_str = str(valor).replace(',', '.')
+                # Eliminar caracteres no numéricos excepto punto decimal
+                valor_str = re.sub(r'[^\d.]', '', valor_str)
+                # Verificar si es un número válido
+                if valor_str and valor_str != '.':
+                    # Si no tiene decimales, agregar .0
+                    if '.' not in valor_str:
+                        return f"{valor_str}"
+                    return valor_str
+                return "---"
+            except:
+                return "---"
+        
+        # Aplicar limpieza
+        for key in ['FeNO50', 'Temperatura', 'Presion', 'Flujo']:
+            datos[key] = limpiar_valor(datos[key])
         
         # Buscar y extraer logos si existen
-        imagenes = pagina.get_images(full=True)
-        for img_index, img_info in enumerate(imagenes):
-            try:
-                xref = img_info[0]
-                img = doc_pdf.extract_image(xref)
-                img_bytes = img["image"]
-                
-                # Filtrar por tamaño para identificar logos
-                if img["width"] > 200 and img["height"] > 50:
-                    datos["img_logo"] = img_bytes
-                
-            except Exception as e:
-                st.warning(f"Error procesando imagen {img_index}: {str(e)}")
+        try:
+            imagenes = pagina.get_images(full=True)
+            for img_index, img_info in enumerate(imagenes[:5]):  # Limitar a 5 imágenes
+                try:
+                    xref = img_info[0]
+                    img = doc_pdf.extract_image(xref)
+                    img_bytes = img["image"]
+                    
+                    # Filtrar por tamaño para identificar logos
+                    if img["width"] > 100 and img["height"] > 30:
+                        datos["img_logo"] = img_bytes
+                        break  # Tomar solo el primer logo
+                    
+                except Exception as e:
+                    continue
+        except:
+            datos["img_logo"] = None
         
         # Extraer específicamente la curva de exhalación
-        datos["img_curva"] = extraer_curva_exhalacion_mejorada(pagina)
+        datos["img_curva"] = extraer_curva_exhalacion_mejorada(pagina, texto_completo)
         
         doc_pdf.close()
+        
+        # Log de depuración
+        st.session_state['ultimos_datos'] = datos
+        
         return datos
         
     except Exception as e:
         st.error(f"Error procesando PDF: {str(e)}")
-        return None
+        # Devolver datos por defecto para evitar errores
+        return {
+            "FeNO50": "---",
+            "Temperatura": "---",
+            "Presion": "---",
+            "Flujo": "---",
+            "img_curva": None,
+            "img_logo": None
+        }
 
-def extraer_curva_exhalacion_mejorada(pagina):
+def extraer_curva_exhalacion_mejorada(pagina, texto=""):
     """
     Extrae la curva de exhalación con coordenadas precisas
     """
     try:
+        # Buscar coordenadas basadas en texto
+        bloques = pagina.get_text("blocks")
+        
         # Buscar texto relacionado con la curva
-        texto = pagina.get_text()
+        for bloque in bloques:
+            x0, y0, x1, y1, texto_bloque, *_ = bloque
+            
+            if any(keyword in texto_bloque.upper() for keyword in ["CURVA", "EXHALACIÓN", "EXHALACION", "GRAPH", "PLOT"]):
+                # Ajustar coordenadas para capturar la curva
+                # Estas coordenadas son aproximadas, pueden necesitar ajuste
+                rect_curva = fitz.Rect(
+                    x0 - 20,      # Margen izquierdo
+                    y1 + 10,      # Bajar desde el texto
+                    min(x0 + 250, pagina.rect.width),  # Ancho máximo
+                    min(y1 + 150, pagina.rect.height)  # Alto máximo
+                )
+                
+                # Capturar la imagen de la curva
+                pix = pagina.get_pixmap(
+                    clip=rect_curva,
+                    matrix=fitz.Matrix(2, 2),  # Resolución media
+                    alpha=False
+                )
+                
+                # Convertir a bytes PNG
+                img_bytes = pix.tobytes("png")
+                
+                # Opcional: procesar con PIL para ajustes
+                try:
+                    img_pil = Image.open(io.BytesIO(img_bytes))
+                    # Recortar bordes blancos si es necesario
+                    # (opcional, descomentar si es necesario)
+                    # img_pil = recortar_bordes(img_pil)
+                    
+                    output = io.BytesIO()
+                    img_pil.save(output, format='PNG')
+                    return output.getvalue()
+                except:
+                    return img_bytes
+                
+                break
         
-        # Coordenadas aproximadas donde debería estar la curva
-        # Ajusta estos valores según tus PDFs
-        rect_curva = fitz.Rect(50, 400, 450, 600)
-        
-        # Capturar la imagen de la curva
+        # Si no encontró por texto, usar área predeterminada
+        rect_curva = fitz.Rect(50, 300, 400, 500)
         pix = pagina.get_pixmap(
             clip=rect_curva,
-            matrix=fitz.Matrix(2, 2),  # Resolución media para mantener calidad
+            matrix=fitz.Matrix(2, 2),
             alpha=False
         )
-        
-        # Convertir a bytes PNG
-        img_bytes = pix.tobytes("png")
-        
-        # Opcional: procesar con PIL para ajustes
-        img_pil = Image.open(io.BytesIO(img_bytes))
-        
-        # Convertir de nuevo a bytes
-        output = io.BytesIO()
-        img_pil.save(output, format='PNG')
-        return output.getvalue()
+        return pix.tobytes("png")
         
     except Exception as e:
         st.warning(f"No se pudo extraer la curva: {str(e)}")
         return None
+
+# Función auxiliar para recortar bordes blancos (opcional)
+def recortar_bordes(imagen):
+    """Recorta bordes blancos de una imagen"""
+    try:
+        from PIL import ImageChops
+        
+        bg = Image.new(imagen.mode, imagen.size, (255, 255, 255))
+        diff = ImageChops.difference(imagen, bg)
+        diff = ImageChops.add(diff, diff, 2.0, -100)
+        bbox = diff.getbbox()
+        
+        if bbox:
+            return imagen.crop(bbox)
+        return imagen
+    except:
+        return imagen
 
 # ==========================================================
 # 3. GENERACIÓN DEL DOCUMENTO WORD (IDÉNTICO AL MODELO)
@@ -163,6 +294,7 @@ def extraer_curva_exhalacion_mejorada(pagina):
 def generar_documento_identico(datos, output_path="informe_generado.docx"):
     """
     Crea un documento Word idéntico al modelo proporcionado
+    con manejo seguro de datos
     """
     try:
         # Crear nuevo documento
@@ -189,16 +321,23 @@ def generar_documento_identico(datos, output_path="informe_generado.docx"):
         
         # Logo izquierdo (si existe)
         if datos.get("img_logo"):
-            paragraph_left = cell_left.paragraphs[0]
-            run_left = paragraph_left.add_run()
-            run_left.add_picture(io.BytesIO(datos["img_logo"]), width=Inches(2.2))
+            try:
+                paragraph_left = cell_left.paragraphs[0]
+                run_left = paragraph_left.add_run()
+                run_left.add_picture(io.BytesIO(datos["img_logo"]), width=Inches(2.2))
+            except:
+                # Si falla, dejar celda vacía
+                pass
         
         # Logo derecho (si existe)
         paragraph_right = cell_right.paragraphs[0]
         paragraph_right.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         if datos.get("img_logo"):
-            run_right = paragraph_right.add_run()
-            run_right.add_picture(io.BytesIO(datos["img_logo"]), width=Inches(2.9))
+            try:
+                run_right = paragraph_right.add_run()
+                run_right.add_picture(io.BytesIO(datos["img_logo"]), width=Inches(2.9))
+            except:
+                pass
         
         doc.add_paragraph()  # Espacio
         
@@ -211,16 +350,21 @@ def generar_documento_identico(datos, output_path="informe_generado.docx"):
         for i, width in enumerate([1.5, 3.0, 1.5, 3.0]):
             datos_table.columns[i].width = Inches(width)
         
+        # Función segura para obtener datos
+        def get_dato(key, default="---"):
+            valor = datos.get(key, default)
+            return str(valor) if valor is not None else default
+        
         # Llenar datos del paciente
         filas_datos = [
-            ("Nombre:", datos.get("nombre", "---"), "Apellidos:", datos.get("apellidos", "---")),
-            ("RUT:", datos.get("rut", "---"), "Género:", datos.get("genero", "---")),
-            ("Operador:", datos.get("operador", "---"), "Médico:", datos.get("medico", "---")),
-            ("F. nacimiento:", datos.get("f_nacimiento", "---"), "Edad:", datos.get("edad", "---")),
-            ("Altura:", datos.get("altura", "---") + " cm", "Peso:", datos.get("peso", "---") + " kg"),
-            ("Raza:", "Caucásica", "Procedencia:", datos.get("procedencia", "---")),
+            ("Nombre:", get_dato("nombre"), "Apellidos:", get_dato("apellidos")),
+            ("RUT:", get_dato("rut"), "Género:", get_dato("genero")),
+            ("Operador:", get_dato("operador"), "Médico:", get_dato("medico")),
+            ("F. nacimiento:", get_dato("f_nacimiento"), "Edad:", get_dato("edad")),
+            ("Altura:", f"{get_dato('altura')} cm", "Peso:", f"{get_dato('peso')} kg"),
+            ("Raza:", "Caucásica", "Procedencia:", get_dato("procedencia")),
             ("", "", "", ""),
-            ("Fecha de Examen:", datos.get("fecha_examen", "---"), "", "")
+            ("Fecha de Examen:", get_dato("fecha_examen"), "", "")
         ]
         
         for i, (cell1, cell2, cell3, cell4) in enumerate(filas_datos):
@@ -267,9 +411,9 @@ def generar_documento_identico(datos, output_path="informe_generado.docx"):
         params_table.columns[2].width = Inches(1.5)
         
         parametros = [
-            ("Temperatura:", datos.get("temperatura", "---"), "°C"),
-            ("Presión:", datos.get("presion", "---"), "cmH2O"),
-            ("Tasa de Flujo:", datos.get("flujo", "---"), "ml/s")
+            ("Temperatura:", get_dato("temperatura"), "°C"),
+            ("Presión:", get_dato("presion"), "cmH2O"),
+            ("Tasa de Flujo:", get_dato("flujo"), "ml/s")
         ]
         
         for i, (param, valor, unidad) in enumerate(parametros):
@@ -315,7 +459,7 @@ def generar_documento_identico(datos, output_path="informe_generado.docx"):
         
         # Valor FeNO50
         p2 = feno_cell2.paragraphs[0]
-        run2 = p2.add_run(datos.get("feno50", "---"))
+        run2 = p2.add_run(get_dato("feno50"))
         run2.font.name = 'Calibri'
         run2.font.size = Pt(16)
         run2.bold = True
@@ -353,12 +497,17 @@ def generar_documento_identico(datos, output_path="informe_generado.docx"):
                 )
                 
             except Exception as e:
-                st.warning(f"Error insertando curva: {str(e)}")
                 # Insertar placeholder si hay error
                 p_placeholder = doc.add_paragraph()
                 p_placeholder.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 placeholder_run = p_placeholder.add_run("[CURVA DE EXHALACIÓN]")
                 placeholder_run.italic = True
+        else:
+            # Placeholder si no hay curva
+            p_placeholder = doc.add_paragraph()
+            p_placeholder.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            placeholder_run = p_placeholder.add_run("[CURVA DE EXHALACIÓN - NO DISPONIBLE]")
+            placeholder_run.italic = True
         
         doc.add_paragraph()  # Espacio
         
@@ -401,9 +550,20 @@ def generar_documento_identico(datos, output_path="informe_generado.docx"):
 # 4. INTERFAZ STREAMLIT MEJORADA
 # ==========================================================
 def main():
+    # Inicializar variables de sesión
+    if 'datos_pdf' not in st.session_state:
+        st.session_state.datos_pdf = None
+    if 'debug_mode' not in st.session_state:
+        st.session_state.debug_mode = False
+    
     # Encabezado principal
     st.markdown("<h1 class='main-header'>🏥 INT – Laboratorio de Función Pulmonar</h1>", unsafe_allow_html=True)
     st.markdown("<h3 class='main-header'>Generador de Informes de Óxido Nítrico Exhalado (FeNO)</h3>", unsafe_allow_html=True)
+    
+    # Opción de debug (oculta)
+    with st.sidebar:
+        if st.checkbox("Modo Debug", key="debug_checkbox"):
+            st.session_state.debug_mode = True
     
     # Crear pestañas para mejor organización
     tab1, tab2, tab3 = st.tabs(["📋 Datos del Paciente", "📄 Carga de PDF", "📊 Vista Previa"])
@@ -417,7 +577,7 @@ def main():
             apellidos = st.text_input("Apellidos *", key="apellidos")
             rut = st.text_input("RUT/Pasaporte *", key="rut")
             genero = st.selectbox("Género *", ["Seleccione", "Hombre", "Mujer"], key="genero")
-            procedencia = st.text_input("Procedencia *", key="procedencia")
+            procedencia = st.text_input("Procedencia *", key="procedencia", value="Poli")
         
         with col2:
             st.subheader("📈 Datos Clínicos")
@@ -438,7 +598,8 @@ def main():
             pdf_file = st.file_uploader(
                 "Seleccionar archivo PDF",
                 type=["pdf"],
-                help="Suba el informe PDF generado por el equipo Sunvou"
+                help="Suba el informe PDF generado por el equipo Sunvou",
+                key="pdf_uploader"
             )
             
             if pdf_file:
@@ -449,6 +610,30 @@ def main():
                     st.markdown("<div class='metric-box'>", unsafe_allow_html=True)
                     st.metric("Tamaño", f"{pdf_file.size / 1024:.1f} KB")
                     st.markdown("</div>", unsafe_allow_html=True)
+                
+                # Botón para extraer datos
+                if st.button("🔍 Extraer Datos del PDF", type="secondary", key="extraer_btn"):
+                    with st.spinner("Procesando PDF..."):
+                        datos_extractos = extraer_datos_pdf_sunvou(pdf_file)
+                        
+                        if datos_extractos:
+                            st.session_state.datos_pdf = datos_extractos
+                            
+                            # Mostrar datos extraídos
+                            st.markdown("<div class='success-box'>", unsafe_allow_html=True)
+                            st.success("✅ Datos extraídos correctamente")
+                            
+                            col_val1, col_val2, col_val3, col_val4 = st.columns(4)
+                            with col_val1:
+                                st.metric("FeNO50", f"{datos_extractos['FeNO50']} ppb")
+                            with col_val2:
+                                st.metric("Temperatura", f"{datos_extractos['Temperatura']} °C")
+                            with col_val3:
+                                st.metric("Presión", f"{datos_extractos['Presion']} cmH2O")
+                            with col_val4:
+                                st.metric("Flujo", f"{datos_extractos['Flujo']} ml/s")
+                            
+                            st.markdown("</div>", unsafe_allow_html=True)
         
         # Opciones de procesamiento
         tipo_prueba = st.radio(
@@ -461,48 +646,45 @@ def main():
     with tab3:
         st.subheader("👁️ Vista Previa de Datos")
         
-        if 'datos_pdf' not in st.session_state:
-            st.session_state.datos_pdf = None
-        
-        if pdf_file and st.button("🔍 Extraer Datos del PDF", type="primary"):
-            with st.spinner("Procesando PDF..."):
-                datos_extractos = extraer_datos_pdf_sunvou(pdf_file)
-                
-                if datos_extractos:
-                    st.session_state.datos_pdf = datos_extractos
-                    
-                    # Mostrar datos extraídos
-                    st.markdown("<div class='success-box'>", unsafe_allow_html=True)
-                    st.success("✅ Datos extraídos correctamente")
-                    
-                    col_val1, col_val2, col_val3, col_val4 = st.columns(4)
-                    with col_val1:
-                        st.metric("FeNO50", f"{datos_extractos['FeNO50']} ppb")
-                    with col_val2:
-                        st.metric("Temperatura", f"{datos_extractos['Temperatura']} °C")
-                    with col_val3:
-                        st.metric("Presión", f"{datos_extractos['Presion']} cmH2O")
-                    with col_val4:
-                        st.metric("Flujo", f"{datos_extractos['Flujo']} ml/s")
-                    
-                    st.markdown("</div>", unsafe_allow_html=True)
-        
         # Mostrar datos del paciente
-        if nombre or rut or any(st.session_state.get(field) for field in ['nombre', 'rut', 'medico']):
+        if nombre or rut:
             st.markdown("**📋 Resumen de Datos del Paciente:**")
             col_res1, col_res2 = st.columns(2)
             
             with col_res1:
-                st.write(f"**Nombre:** {nombre} {apellidos}")
-                st.write(f"**RUT:** {rut}")
-                st.write(f"**Género:** {genero}")
-                st.write(f"**Edad:** {edad} años")
+                st.write(f"**Nombre:** {nombre if nombre else '---'} {apellidos if apellidos else ''}")
+                st.write(f"**RUT:** {rut if rut else '---'}")
+                st.write(f"**Género:** {genero if genero != 'Seleccione' else '---'}")
+                st.write(f"**Edad:** {edad if edad else '---'} años")
             
             with col_res2:
-                st.write(f"**Altura:** {altura} cm")
-                st.write(f"**Peso:** {peso} kg")
-                st.write(f"**Procedencia:** {procedencia}")
-                st.write(f"**Médico:** {medico}")
+                st.write(f"**Altura:** {altura if altura else '---'} cm")
+                st.write(f"**Peso:** {peso if peso else '---'} kg")
+                st.write(f"**Procedencia:** {procedencia if procedencia else '---'}")
+                st.write(f"**Médico:** {medico if medico else '---'}")
+        
+        # Mostrar datos extraídos del PDF
+        if st.session_state.datos_pdf:
+            st.markdown("**📄 Datos Extraídos del PDF:**")
+            
+            col_data1, col_data2, col_data3, col_data4 = st.columns(4)
+            
+            with col_data1:
+                st.info(f"**FeNO50:** {st.session_state.datos_pdf['FeNO50']} ppb")
+            with col_data2:
+                st.info(f"**Temperatura:** {st.session_state.datos_pdf['Temperatura']} °C")
+            with col_data3:
+                st.info(f"**Presión:** {st.session_state.datos_pdf['Presion']} cmH2O")
+            with col_data4:
+                st.info(f"**Flujo:** {st.session_state.datos_pdf['Flujo']} ml/s")
+            
+            # Mostrar imágenes si están disponibles
+            if st.session_state.datos_pdf.get('img_curva'):
+                st.markdown("**📈 Curva de Exhalación:**")
+                try:
+                    st.image(st.session_state.datos_pdf['img_curva'], caption="Curva extraída del PDF", width=400)
+                except:
+                    st.warning("No se pudo mostrar la curva de exhalación")
     
     # ==================== BOTÓN DE GENERACIÓN ====================
     st.markdown("---")
@@ -513,22 +695,22 @@ def main():
         if st.button("🚀 GENERAR INFORME COMPLETO", type="primary", use_container_width=True):
             # Validación de datos obligatorios
             campos_obligatorios = {
-                "nombre": nombre,
-                "apellidos": apellidos,
-                "rut": rut,
-                "genero": genero,
-                "medico": medico,
-                "operador": operador
+                "Nombre": nombre,
+                "Apellidos": apellidos,
+                "RUT": rut,
+                "Género": genero,
+                "Médico": medico,
+                "Operador": operador
             }
             
-            campos_faltantes = [k for k, v in campos_obligatorios.items() if not v or v == "Seleccione"]
+            campos_faltantes = [k for k, v in campos_obligatorios.items() if not v or (k == "Género" and v == "Seleccione")]
             
             if campos_faltantes:
                 st.error(f"❌ Faltan campos obligatorios: {', '.join(campos_faltantes)}")
             elif not pdf_file:
                 st.error("❌ Debe cargar un archivo PDF")
             elif not st.session_state.datos_pdf:
-                st.error("❌ Debe extraer los datos del PDF primero")
+                st.error("❌ Debe extraer los datos del PDF primero (haga clic en 'Extraer Datos del PDF')")
             else:
                 with st.spinner("🔄 Generando informe profesional..."):
                     try:
@@ -545,7 +727,7 @@ def main():
                             "peso": peso,
                             "medico": medico,
                             "operador": operador,
-                            "fecha_examen": fecha_examen.strftime("%d/%m/%Y"),
+                            "fecha_examen": fecha_examen.strftime("%d/%m/%Y") if fecha_examen else "---",
                             "feno50": st.session_state.datos_pdf.get("FeNO50", "---"),
                             "temperatura": st.session_state.datos_pdf.get("Temperatura", "---"),
                             "presion": st.session_state.datos_pdf.get("Presion", "---"),
@@ -565,7 +747,7 @@ def main():
                             st.download_button(
                                 label="📥 DESCARGAR INFORME EN WORD",
                                 data=doc_bytes,
-                                file_name=f"INFORME_FENO_{rut}_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
+                                file_name=f"INFORME_FENO_{rut if rut else 'SIN_RUT'}_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
                                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                                 type="primary",
                                 use_container_width=True
@@ -576,6 +758,8 @@ def main():
                             
                     except Exception as e:
                         st.error(f"❌ Error durante la generación: {str(e)}")
+                        if st.session_state.debug_mode:
+                            st.exception(e)
     
     # ==================== INSTRUCCIONES ====================
     with st.expander("📖 Instrucciones de Uso"):
